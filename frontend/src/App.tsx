@@ -33,35 +33,54 @@ function MovieCard({movie, onOpen, compact=false}: {movie: Movie, onOpen:(m:Movi
 
 function Section({title, subtitle, items, onOpen, action}: {title:string,subtitle?:string,items:Movie[],onOpen:(m:Movie)=>void,action?:ReactNode}) {
   if (!items.length) return null
-  return <section className="content-section"><div className="section-heading"><div><p className="eyebrow">{subtitle || 'HANDPICKED FOR YOUR NEXT NIGHT IN'}</p><h2>{title}</h2></div>{action}</div><div className="movie-row">{items.slice(0,12).map(m=><MovieCard key={m.id} movie={m} onOpen={onOpen}/>)}</div></section>
+  return <section className="content-section"><div className="section-heading"><div><p className="eyebrow">{subtitle || 'HANDPICKED FOR YOUR NEXT NIGHT IN'}</p><h2>{title}</h2></div>{action}</div><div className="movie-row">{items.map(m=><MovieCard key={m.id} movie={m} onOpen={onOpen}/>)}</div></section>
 }
 
 export default function App() {
   const [trending,setTrending]=useState<Movie[]>([]), [popular,setPopular]=useState<Movie[]>([]), [top,setTop]=useState<Movie[]>([]), [catalogMovies,setCatalogMovies]=useState<Movie[]>([])
   const [query,setQuery]=useState(''), [results,setResults]=useState<Movie[]>([]), [searching,setSearching]=useState(false), [searched,setSearched]=useState(false)
+  const [searchPage,setSearchPage]=useState(1), [searchPages,setSearchPages]=useState(1)
+  const [discoverPage,setDiscoverPage]=useState(1), [discoverPages,setDiscoverPages]=useState(1), [discoverLoading,setDiscoverLoading]=useState(false)
   const [genre,setGenre]=useState('All Movies'), [discover,setDiscover]=useState<Movie[]>([])
   const [selected,setSelected]=useState<Movie|null>(null), [similar,setSimilar]=useState<Movie[]>([]), [detailLoading,setDetailLoading]=useState(false)
   const [prefs,setPrefs]=useState<string[]>([]), [liked,setLiked]=useState<string[]>([]), [personal,setPersonal]=useState<Movie[]>([]), [personalLoading,setPersonalLoading]=useState(false)
   const [error,setError]=useState(''), [notice,setNotice]=useState(''), [apiStatus,setApiStatus]=useState<{tmdb_enabled:boolean,catalog_size:number}|null>(null)
   const [mobileMenu,setMobileMenu]=useState(false)
-  useEffect(()=>{ Promise.all([collection('trending'),collection('popular'),collection('top-rated'),filterMovies('All Movies'),health()]).then(([a,b,c,d,h])=>{setTrending(a.items);setPopular(b.items);setTop(c.items);setDiscover(d.items);setCatalogMovies(d.items);setApiStatus(h)}).catch(e=>setError(e.message)) },[])
+  useEffect(()=>{ Promise.all([collection('trending'),collection('popular'),collection('top-rated'),filterMovies('All Movies'),health()]).then(([a,b,c,d,h])=>{setTrending(a.items);setPopular(b.items);setTop(c.items);setDiscover(d.items);setCatalogMovies(d.items);setDiscoverPages(d.total_pages||1);setApiStatus(h)}).catch(e=>setError(e.message)) },[])
   async function runSearch(e?:FormEvent) {
     e?.preventDefault(); const q=query.trim()
     if(!q){setSearched(false);setResults([]);return}
     setSearching(true);setSearched(true);setError('')
-    try{const data=await searchMovies(q,genre);setResults(data.items)}catch(e){setError(e instanceof Error?e.message:'Search failed')}finally{setSearching(false)}
+    try{const data=await searchMovies(q,genre,1);setResults(data.items);setSearchPage(1);setSearchPages(data.total_pages||1)}catch(e){setError(e instanceof Error?e.message:'Search failed')}finally{setSearching(false)}
   }
   async function openMovie(movie:Movie) {
     setSelected(movie);setSimilar([]);setDetailLoading(true);setError('')
     try {
       const detail=await getMovie(movie.id);setSelected({...movie,...detail})
-      try {const rec=await similarMovies(movie.id);setSimilar(rec.items)} catch { /* TMDB-only titles may not exist in local ML catalog */ }
+      try {const rec=await similarMovies(movie.id);setSimilar(rec.items)} catch { /* Keep movie details usable even if recommendation lookup is unavailable. */ }
     } catch(e) {setError(e instanceof Error?e.message:'Could not load movie details')}
     finally {setDetailLoading(false)}
   }
   async function chooseGenre(g:string) {
-    setGenre(g);setError('')
-    try{const data=await filterMovies(g);setDiscover(data.items);if(searched && query.trim()){const matches=await searchMovies(query.trim(),g);setResults(matches.items)}}catch(e){setError(e instanceof Error?e.message:'Could not filter movies')}
+    setGenre(g);setError('');setDiscoverPage(1)
+    try{
+      const data=await filterMovies(g,'',1);setDiscover(data.items);setDiscoverPages(data.total_pages||1)
+      if(searched && query.trim()){const matches=await searchMovies(query.trim(),g,1);setResults(matches.items);setSearchPage(1);setSearchPages(matches.total_pages||1)}
+    }catch(e){setError(e instanceof Error?e.message:'Could not filter movies')}
+  }
+  async function loadMoreSearch() {
+    if(searching || searchPage>=searchPages) return
+    setSearching(true)
+    try { const next=searchPage+1; const data=await searchMovies(query.trim(),genre,next); setResults(old=>[...old,...data.items.filter(m=>!old.some(x=>String(x.id)===String(m.id)))]); setSearchPage(next) }
+    catch(e){setError(e instanceof Error?e.message:'Could not load more results')}
+    finally{setSearching(false)}
+  }
+  async function loadMoreDiscover() {
+    if(discoverLoading || discoverPage>=discoverPages) return
+    setDiscoverLoading(true)
+    try { const next=discoverPage+1; const data=await filterMovies(genre,'',next); setDiscover(old=>[...old,...data.items.filter(m=>!old.some(x=>String(x.id)===String(m.id)))]); setDiscoverPage(next) }
+    catch(e){setError(e instanceof Error?e.message:'Could not load more movies')}
+    finally{setDiscoverLoading(false)}
   }
   async function getPersonalized() {
     if(!prefs.length&&!liked.length){setNotice('Choose at least one genre or liked movie first.');return}
@@ -99,7 +118,10 @@ export default function App() {
           {searching ? (
             <div className="loading-state"><LoaderCircle className="spin" /> Searching movies…</div>
           ) : results.length ? (
-            <div className="movie-grid">{results.map(m => <MovieCard key={m.id} movie={m} onOpen={openMovie} />)}</div>
+            <>
+              <div className="movie-grid">{results.map(m => <MovieCard key={m.id} movie={m} onOpen={openMovie} />)}</div>
+              {searchPage < searchPages && <div className="load-more-wrap"><button className="secondary-btn" onClick={loadMoreSearch} disabled={searching}>{searching?<LoaderCircle className="spin" size={16}/>:null} Load more results</button></div>}
+            </>
           ) : (
             <div className="empty-state"><Search size={28} /><h3>No movies found</h3><p>Try another title or check the spelling.</p></div>
           )}
@@ -114,11 +136,12 @@ export default function App() {
       )}
       <section className="discover-section content-section" id="discover"><div className="section-heading"><div><p className="eyebrow">FIND YOUR GENRE</p><h2>What are we in the mood for?</h2><p className="muted">Pick a lane. We’ll bring the stories.</p></div><div className="discover-icon"><SlidersHorizontal size={19}/></div></div>
         <div className="genre-chips"><button className={genre==='All Movies'?'active':''} onClick={()=>chooseGenre('All Movies')}>All movies</button>{genres.map(g=><button key={g} className={genre===g?'active':''} onClick={()=>chooseGenre(g)}>{g}</button>)}</div>
-        {discover.length?<div className="movie-grid">{discover.slice(0,12).map(m=><MovieCard key={m.id} movie={m} onOpen={openMovie}/>)}</div>:<div className="empty-state"><Film size={28}/><h3>No movies in this category yet</h3><p>Try another genre or reset to all movies.</p><button className="secondary-btn" onClick={()=>chooseGenre('All Movies')}>Show all movies</button></div>}
+        {discover.length?<><div className="movie-grid">{discover.map(m=><MovieCard key={m.id} movie={m} onOpen={openMovie}/>)}</div>
+        {discoverPage < discoverPages && <div className="load-more-wrap"><button className="secondary-btn" onClick={loadMoreDiscover} disabled={discoverLoading}>{discoverLoading?<LoaderCircle className="spin" size={16}/>:null} Load more movies</button></div>}</>:<div className="empty-state"><Film size={28}/><h3>No movies in this category yet</h3><p>Try another genre or reset to all movies.</p><button className="secondary-btn" onClick={()=>chooseGenre('All Movies')}>Show all movies</button></div>}
       </section>
       <section className="personal-section" id="personalized"><div className="personal-copy"><div className="pill dark-pill"><WandSparkles size={14}/> YOUR PERSONAL MOVIE MATCH</div><h2>A little more <span>you.</span></h2><p>Tell us what you love. Our content-based recommendation engine uses movie genres, story descriptions, and keywords to find your next watch.</p><div className="personal-note"><Sparkles size={17}/><span>Powered by TF-IDF + cosine similarity, not random picks.</span></div></div>
         <div className="preference-panel"><div className="panel-heading"><div><span className="step-label">01 / YOUR TASTE</span><h3>Choose your genres</h3></div><span className="panel-spark"><Heart size={18}/></span></div><div className="genre-chips preference-chips">{genres.map(g=><button key={g} className={prefs.includes(g)?'active':''} onClick={()=>setPrefs(old=>old.includes(g)?old.filter(x=>x!==g):[...old,g])}>{prefs.includes(g)&&'✓ '}{g}</button>)}</div>
-          <div className="panel-heading liked-heading"><div><span className="step-label">02 / OPTIONAL</span><h3>Pick movies you like</h3></div><span className="liked-count">{liked.length} selected</span></div><div className="liked-movies">{catalogMovies.slice(0,12).map(m=><button key={m.id} className={liked.includes(String(m.id))?'liked':''} onClick={()=>setLiked(old=>old.includes(String(m.id))?old.filter(x=>x!==String(m.id)):[...old,String(m.id)])}><img src={poster(m)} alt=""/><span>{m.title}</span>{liked.includes(String(m.id))&&<i>✓</i>}</button>)}</div>
+          <div className="panel-heading liked-heading"><div><span className="step-label">02 / OPTIONAL</span><h3>Pick movies you like</h3></div><span className="liked-count">{liked.length} selected</span></div><div className="liked-movies">{catalogMovies.map(m=><button key={m.id} className={liked.includes(String(m.id))?'liked':''} onClick={()=>setLiked(old=>old.includes(String(m.id))?old.filter(x=>x!==String(m.id)):[...old,String(m.id)])}><img src={poster(m)} alt=""/><span>{m.title}</span>{liked.includes(String(m.id))&&<i>✓</i>}</button>)}</div>
           <button className="primary-btn full-btn" onClick={getPersonalized} disabled={personalLoading}>{personalLoading?<LoaderCircle className="spin" size={17}/>:<Sparkles size={17}/>} {personalLoading?'Finding your matches':'Find my movies'} <ArrowRight size={16}/></button>{notice&&<p className="inline-notice">{notice}</p>}
         </div>
       </section>
@@ -127,7 +150,7 @@ export default function App() {
     <footer><a href="#home" className="brand"><span className="brand-mark"><Clapperboard size={18}/></span><span>Cine<span>Glow</span></span></a><p>Made for movie nights and curious minds. Movie imagery and metadata are provided by their respective rights holders. This product uses TMDB imagery/API where available and is not endorsed or certified by TMDB.</p><span className="footer-right">Discover a little wonder. ✦</span></footer>
     <AnimatePresence>{selected&&<motion.div className="modal-backdrop" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} onMouseDown={e=>{if(e.target===e.currentTarget)setSelected(null)}}><motion.div className="movie-modal" role="dialog" aria-modal="true" aria-label={`${selected.title} details`} initial={{opacity:0,y:18,scale:.98}} animate={{opacity:1,y:0,scale:1}} exit={{opacity:0,y:12,scale:.98}} transition={{duration:.2}}>
       <button className="modal-close" onClick={()=>setSelected(null)} aria-label="Close details"><X/></button><div className="modal-hero" style={{backgroundImage:`linear-gradient(90deg,rgba(26,17,43,.96),rgba(26,17,43,.65),rgba(26,17,43,.18)),url("${selected.backdrop_path||poster(selected)}")`}}><div className="modal-copy"><p className="eyebrow">MOVIE DETAILS</p><h2>{selected.title}</h2><div className="modal-facts">{year(selected)&&<span>{year(selected)}</span>}{rating(selected)&&<span><Star size={13} fill="currentColor"/> {rating(selected)}</span>}{selected.runtime&&<span>{selected.runtime} min</span>}</div><div className="modal-genres">{(selected.genre_names||selected.genres||[]).map(g=><span key={g}>{g}</span>)}</div></div></div><div className="modal-body"><h3>The story</h3><p>{selected.overview||'A synopsis is not available for this title.'}</p>{selected.source==='tmdb'&&<p className="attribution">Movie data provided by TMDB.</p>}
-        <div className="recommendation-head"><div><p className="eyebrow">THE ML MATCHMAKER</p><h3>Because you picked this</h3></div><span className="ml-badge"><Sparkles size={13}/> TF-IDF</span></div>{detailLoading?<div className="loading-state"><LoaderCircle className="spin"/> Finding similar stories…</div>:similar.length?<div className="modal-recs">{similar.slice(0,5).map(m=><button key={m.id} onClick={()=>openMovie(m)}><img src={poster(m)} alt=""/><span><strong>{m.title}</strong><small>{m.recommendation_reason||'Similar movie themes'}</small></span><ArrowRight size={15}/></button>)}</div>:<p className="muted small">ML recommendations are available for movies in the included catalog. Configure TMDB to explore more titles, then choose a catalog movie for similarity matches.</p>}</div>
+        <div className="recommendation-head"><div><p className="eyebrow">THE ML MATCHMAKER</p><h3>Because you picked this</h3></div><span className="ml-badge"><Sparkles size={13}/> TF-IDF</span></div>{detailLoading?<div className="loading-state"><LoaderCircle className="spin"/> Finding similar stories…</div>:similar.length?<div className="modal-recs">{similar.slice(0,5).map(m=><button key={m.id} onClick={()=>openMovie(m)}><img src={poster(m)} alt=""/><span><strong>{m.title}</strong><small>{m.recommendation_reason||'Similar movie themes'}</small></span><ArrowRight size={15}/></button>)}</div>:<p className="muted small">Recommendations need movie metadata. If this title is from TMDB, check the backend connection and TMDB configuration, then try again.</p>}</div>
       </motion.div></motion.div>}</AnimatePresence>
   </div>
 }

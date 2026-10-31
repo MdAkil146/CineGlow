@@ -1,0 +1,1 @@
+cd "C:\Users\Mohammad Akil\Desktop\movie-suggestion-website"; Start-Process powershell -ArgumentList '-NoExit','-Command','cd backend; ..\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000'; cd frontend; npm run dev
